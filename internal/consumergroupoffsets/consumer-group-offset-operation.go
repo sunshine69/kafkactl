@@ -1,7 +1,9 @@
 package consumergroupoffsets
 
 import (
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/deviceinsight/kafkactl/internal/helpers"
 	"golang.org/x/sync/errgroup"
@@ -16,6 +18,7 @@ import (
 type ResetConsumerGroupOffsetFlags struct {
 	Topic             []string
 	AllTopics         bool
+	TopicListFile     string
 	Partition         int32
 	Offset            int64
 	OldestOffset      bool
@@ -38,7 +41,7 @@ type ConsumerGroupOffsetOperation struct {
 
 func (operation *ConsumerGroupOffsetOperation) ResetConsumerGroupOffset(flags ResetConsumerGroupOffsetFlags, groupName string) error {
 
-	if (flags.Topic == nil || len(flags.Topic) == 0) && (!flags.AllTopics) {
+	if (flags.Topic == nil || len(flags.Topic) == 0) && (!flags.AllTopics) && (flags.TopicListFile == "") {
 		return errors.New("no topic specified")
 	}
 
@@ -72,6 +75,7 @@ func (operation *ConsumerGroupOffsetOperation) ResetConsumerGroupOffset(flags Re
 	}
 
 	var topics []string
+	var processingTopics = []string{}
 
 	if flags.AllTopics {
 		// retrieve all topics in the consumerGroup
@@ -80,8 +84,14 @@ func (operation *ConsumerGroupOffsetOperation) ResetConsumerGroupOffset(flags Re
 			return errors.Wrap(err, "failed to list consumer group offsets")
 		}
 		for topic := range offsets.Blocks {
-			topics = append(topics, topic)
+			processingTopics = append(processingTopics, topic)
 		}
+	} else if flags.TopicListFile != "" {
+		fcontentB, err := os.ReadFile(flags.TopicListFile)
+		if err != nil {
+			return errors.Wrap(err, "failed to read from topic list file")
+		}
+		processingTopics = strings.Split(strings.ReplaceAll(string(fcontentB), "\r\n", "\n"), "\n")
 	} else {
 		// verify that the provided topics exist
 		existingTopics, err := client.Topics()
@@ -94,8 +104,7 @@ func (operation *ConsumerGroupOffsetOperation) ResetConsumerGroupOffset(flags Re
 				return errors.Errorf("topic does not exist: %s", topic)
 			}
 		}
-
-		topics = flags.Topic
+		processingTopics = flags.Topic
 	}
 
 	output.Debugf("reset consumer-group offset for topics: %v", topics)
@@ -129,7 +138,7 @@ func (operation *ConsumerGroupOffsetOperation) ResetConsumerGroupOffset(flags Re
 	consumeErrorGroup, _ := errgroup.WithContext(terminalCtx)
 	consumeErrorGroup.SetLimit(100)
 
-	for _, topic := range topics {
+	for _, topic := range processingTopics {
 		topicName := topic
 		consumeErrorGroup.Go(func() error {
 			consumer := Consumer{
